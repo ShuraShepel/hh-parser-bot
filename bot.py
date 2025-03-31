@@ -1,14 +1,18 @@
+from dotenv import load_dotenv
+from pathlib import Path
 import os
+from openai import OpenAI
 from parser import parse_hh_vacancy
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
-from openai import OpenAI
 
-# Клиент OpenAI с API ключом из переменной окружения
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+# === Загрузка .env ===
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-# Токен Telegram-бота из переменной окружения
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY)
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -25,53 +29,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await context.bot.send_message(chat_id=chat_id, text="Описание получено. Генерирую сопроводительное письмо…")
 
+            # Получение названия вакансии
+            title_line = next((line for line in description.splitlines() if line.strip()), "")
+            vacancy_title = title_line.strip()[:80]
+
             prompt = (
                 "На основе описания вакансии ниже сгенерируй сопроводительное письмо в следующем стиле:\n"
-                "- короткое приветствие (\"Здравствуйте!\");\n"
-                "- представление: Меня зовут Александр. Заинтересовала вакансия \"...\";\n"
-                "- блок: Мои ключевые навыки и знания, релевантные вашей вакансии:\n"
-                "- список из 7–10 пунктов с ключевыми навыками и опытом;\n"
-                "- завершение: На интервью с радостью расскажу о своем опыте подробнее.\n"
-                "  Спасибо за уделенное время.\n"
-                "  С уважением, Александр\n\n"
+                "- короткое приветствие;\n"
+                "- представление: меня зовут Александр. Заинтересовала вакансия \"{vacancy_title}\".\n"
+                "- строка: Мои ключевые навыки и знания, релевантные вашей вакансии:\n"
+                "- список из 7–10 пунктов с опытом и навыками;\n"
+                "- финальный абзац: На интервью с радостью расскажу о своем опыте подробнее. Спасибо за уделенное время.\n"
+                "- подпись: С уважением, Александр.\n\n"
                 f"Описание вакансии:\n{description}"
             )
 
-            response = client.chat.completions.create(
+            completion = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=700,
+                max_tokens=800,
                 temperature=0.7
             )
 
-            letter = response.choices[0].message.content.strip()
+            letter = completion.choices[0].message.content.strip()
 
-            # Коррекции
-            letter = letter.replace("Здравствуйте!!", "Здравствуйте!")
-            letter = letter.replace(
-                "Меня зовут Александр, и я заинтересован в позиции Старшего менеджера data-продуктов в вашей компании LaTech.",
-                "Меня зовут Александр. Заинтересовала вакансия \"Project Manager (платформа данных)\"."
-            )
-            letter = letter.replace(
-                "Мои ключевые навыки и опыт включают:",
-                "Мои ключевые навыки и знания, релевантные вашей вакансии:"
-            )
-            letter = letter.replace(
-                "Буду рад возможности обсудить мой опыт и как он может быть полезен вашей команде на интервью.",
-                "На интервью с радостью расскажу о своем опыте подробнее.\nСпасибо за уделенное время.\nС уважением, Александр"
-            )
-            letter = letter.replace(
-                "Я готов обсудить свой опыт и возможный вклад в развитие вашей компании на интервью.",
-                "На интервью с радостью расскажу о своем опыте подробнее.\nСпасибо за уделенное время.\nС уважением, Александр"
-            )
-            letter = letter.replace(
-                "С уважением,\nАлександр Шепелев.",
-                "На интервью с радостью расскажу о своем опыте подробнее.\nСпасибо за уделенное время.\nС уважением, Александр"
-            )
-            letter = letter.replace(
-                "Я готов обсудить мой опыт и как я могу принести пользу вашей команде на интервью.",
-                "На интервью с радостью расскажу о своем опыте подробнее.\nСпасибо за уделенное время.\nС уважением, Александр"
-            )
+            # Жёсткая финальная замена концовки
+            letter = letter.rsplit("С уважением", 1)[0].strip()
+            letter += "\n\nНа интервью с радостью расскажу о своем опыте подробнее.\nСпасибо за уделенное время.\nС уважением, Александр"
 
             if len(letter) > 4000:
                 letter = letter[:3990] + "\n\n(обрезано)"
@@ -80,9 +64,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             await context.bot.send_message(chat_id=chat_id, text=f"Ошибка: {e}")
-
     else:
         await context.bot.send_message(chat_id=chat_id, text="Пришли ссылку на вакансию с hh.ru")
+
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
